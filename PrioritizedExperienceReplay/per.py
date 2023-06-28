@@ -37,8 +37,8 @@ class PrioritizedMemory:
         return transitions, probs, idxes
 
     def update(self, priorities, idxes):
-        for idx in idxes:
-            self.heap[idx][0] = priorities[idx]
+        for i, heap_idx in enumerate(idxes):
+            self.heap[heap_idx] = (priorities[i].item(), self.heap[heap_idx][1])
         heapq.heapify(self.heap)
 
     def get_max_priority(self):
@@ -72,7 +72,7 @@ class DQN(nn.Module):
     
     def forward(self, x):
         x = self.layers(x)
-        x = nn.functional.softmax(x)
+        x = nn.functional.softmax(x, dim=0)
         return x
 
 def encode_state(state_idx):
@@ -87,7 +87,7 @@ def get_action(net, state, epsilon):
 
     return torch.argmax(net(encode_state(state))).item()
 
-def td_loss(H, net, target_net, transitions, probs):
+def td_loss(H, net, target_net, transitions, probs, num_actions):
     # Create tensors for previous states and states from transitions
     states = torch.vstack([encode_state(x[1].state) for x in transitions])
     next_states = torch.vstack([encode_state(x[1].next_state) for x in transitions])
@@ -104,9 +104,9 @@ def td_loss(H, net, target_net, transitions, probs):
     importance_weights = torch.pow(importance_weights, (-1 * args.beta)) / max_w
 
     # Calculate the TD-error for the action
-    argmax_q_states = torch.nn.functional.one_hot(torch.stack([torch.argmax(x) for x in net(next_states)]))
-    q_target_states = torch.sum(target_net(next_states) * argmax_q_states, axis=1)
-    q_prev_states = torch.sum(net(states) * torch.nn.functional.one_hot(actions), axis=1)
+    argmax_q_states = torch.nn.functional.one_hot(torch.stack([torch.argmax(x) for x in net(next_states)]), num_classes=num_actions)
+    q_target_states = torch.sum(target_net(next_states) * argmax_q_states, axis=1).reshape(-1, 1)
+    q_prev_states = torch.sum(net(states) * torch.nn.functional.one_hot(actions.reshape(actions.shape[0]), num_classes=num_actions), axis=1).reshape(-1, 1)
     td_errors = rewards + discounts * q_target_states - q_prev_states
 
     return td_errors
@@ -115,13 +115,15 @@ def td_loss(H, net, target_net, transitions, probs):
 
 def run(args):
     env = gym.make("CliffWalking-v0") # Environment for the agent to explore
+    num_actions = env.action_space.n # Number of actions the agent can take
+    num_states = env.observation_space.n # Number of states the agent can be in
     prev_state, _ = env.reset()
 
     delta = 0
 
     # Initialize policy and target networks
-    net = DQN(in_dim=48, out_dim=4)
-    target_net = DQN(in_dim=48, out_dim=4)
+    net = DQN(in_dim=num_states, out_dim=num_actions)
+    target_net = DQN(in_dim=num_states, out_dim=num_actions)
     target_net.load_state_dict(net.state_dict())
 
     optim = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
@@ -154,13 +156,15 @@ def run(args):
                 transitions, probs, idxes = H.sample(args.batch_size)
 
                 # Calculate TD errors
-                loss = td_loss(H, net, target_net, transitions, probs)
+                td_errors = td_loss(H, net, target_net, transitions, probs, num_actions)
+
+                # Update the transition prorities to the td_errors
+                H.update(td_errors.clone().detach(), idxes)
+                
+                loss = torch.sum(td_errors)
 
                 loss.backward()
                 optim.step()
-
-                # Update the transition prorities to the td_errors
-                H.update(td_errors, idxes)
 
 
 
