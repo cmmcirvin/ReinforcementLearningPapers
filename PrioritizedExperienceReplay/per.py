@@ -36,6 +36,11 @@ class PrioritizedMemory:
         transitions = itemgetter(*idxes)(self.heap)
         return transitions, probs, idxes
 
+    def update(self, priorities, idxes):
+        for idx in idxes:
+            self.heap[idx][0] = priorities[idx]
+        heapq.heapify(self.heap)
+
     def get_max_priority(self):
         if len(self.heap) == 0:
             return 1
@@ -82,7 +87,31 @@ def get_action(net, state, epsilon):
 
     return torch.argmax(net(encode_state(state))).item()
 
-#def td_error_loss(net, target_net
+def td_loss(H, net, target_net, transitions, probs):
+    # Create tensors for previous states and states from transitions
+    states = torch.vstack([encode_state(x[1].state) for x in transitions])
+    next_states = torch.vstack([encode_state(x[1].next_state) for x in transitions])
+    rewards = torch.vstack([torch.tensor(x[1].reward) for x in transitions])
+    discounts = torch.vstack([torch.tensor(x[1].discount) for x in transitions])
+    actions = torch.vstack([torch.tensor(x[1].action) for x in transitions])
+
+    # Calculate the maximum importance-sampling weight from the distribution
+    max_w = (args.replay_size * max(H.probabilities())) ** (-1 * args.beta)
+    max_w = torch.tensor([max_w] * args.batch_size)
+
+    # Calculate the importance-sampling weights for each transition 
+    importance_weights = torch.tensor([args.replay_size] * args.batch_size) * torch.tensor(list(probs))
+    importance_weights = torch.pow(importance_weights, (-1 * args.beta)) / max_w
+
+    # Calculate the TD-error for the action
+    argmax_q_states = torch.nn.functional.one_hot(torch.stack([torch.argmax(x) for x in net(next_states)]))
+    q_target_states = torch.sum(target_net(next_states) * argmax_q_states, axis=1)
+    q_prev_states = torch.sum(net(states) * torch.nn.functional.one_hot(actions), axis=1)
+    td_errors = rewards + discounts * q_target_states - q_prev_states
+
+    return td_errors
+
+
 
 def run(args):
     env = gym.make("CliffWalking-v0") # Environment for the agent to explore
@@ -94,6 +123,8 @@ def run(args):
     net = DQN(in_dim=48, out_dim=4)
     target_net = DQN(in_dim=48, out_dim=4)
     target_net.load_state_dict(net.state_dict())
+
+    optim = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
     
     # Create prioritized memory
     H = PrioritizedMemory(args.replay_size)
@@ -101,44 +132,35 @@ def run(args):
     # Iterate for the number of timesteps specified in the arguments
     for step in range(1, args.budget):
 
-        # Select an action based on the policy
-        action = get_action(net, prev_state, args.epsilon)
+        with torch.no_grad():
+            # Select an action based on the policy
+            action = get_action(net, prev_state, args.epsilon)
 
-        # Take the action in the environment
-        state, reward, terminated, truncated, _ = env.step(action)
+            # Take the action in the environment
+            state, reward, terminated, truncated, _ = env.step(action)
 
-        # Store the transition
-        p_t = H.get_max_priority()
-        tr = Transition(prev_state, action, reward, args.gamma, state)
-        H.push(p_t, tr)
+            # Store the transition
+            p_t = H.get_max_priority()
+            tr = Transition(prev_state, action, reward, args.gamma, state)
+            H.push(p_t, tr)
 
         # Update net weights
         if step % args.replay_period == 0:
 
-            # Perform batch_size update steps
-            transitions, probs, idxes = H.sample(args.batch_size)
+            with torch.enable_grad():
+                optim.zero_grad()
 
-            # Create tensors for previous states and states from transitions
-            states = torch.vstack([encode_state(x[1].state) for x in transitions])
-            next_states = torch.vstack([encode_state(x[1].next_state) for x in transitions])
+                # Perform batch_size update steps
+                transitions, probs, idxes = H.sample(args.batch_size)
 
-            # Calculate the maximum importance-sampling weight from the distribution
-            max_w = (args.replay_size * max(H.probabilities())) ** (-1 * args.beta)
-            max_w = torch.tensor([max_w] * args.batch_size)
+                # Calculate TD errors
+                loss = td_loss(H, net, target_net, transitions, probs)
 
-            # Calculate the importance-sampling weights for each transition 
-            importance_weights = torch.tensor([args.replay_size] * args.batch_size) * torch.tensor(list(probs))
-            importance_weights = torch.pow(importance_weights, (-1 * args.beta)) / max_w
+                loss.backward()
+                optim.step()
 
-            # Calculate the TD-error for the action
-            td_errors = transition.reward + transition.gamma * target_net(transition.state)[torch.argmax(net(transition.state))] - net(transition.prev_state)[transition.action]
-
-            # Update the transition priorities back into the heap with an updated priority 
-#            H.push(td_errors, transition)
-
-            # Add the weight update
-#            delta += w_j * delta_j * 
-
+                # Update the transition prorities to the td_errors
+                H.update(td_errors, idxes)
 
 
 
@@ -169,6 +191,7 @@ if __name__ == '__main__':
     parser.add_argument('-g', '--gamma', type=float, default=0.7) # Discount factor
     parser.add_argument('-e', '--epsilon', type=float, default=0.0) # How often to take a random action
     parser.add_argument('-p', '--prioritized_replay', action='store_true') # Whether or not to use a prioritized replay memory
+    parser.add_argument('-lr', '--learning_rate', type=float, default=0.001) # Learning rate for the network
     args = parser.parse_args()
 
     run(args)
