@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from operator import itemgetter
-#from tqdm import tqdm
+from tqdm import tqdm
 
 Transition = namedtuple('Transition', ['state', 'action', 'reward', 'discount', 'next_state'])
 
@@ -24,8 +24,8 @@ class PrioritizedMemory:
             self.heap = self.heap[:-1]
         heapq.heappush(self.heap, (priority, transition))
 
-    def probabilities(self):
-        priorities = [item[0] for item in self.heap]
+    def probabilities(self, alpha=2):
+        priorities = [item[0] ** alpha for item in self.heap]
         total_priorities = sum(priorities)
         return [priority / total_priorities for priority in priorities]
 
@@ -83,6 +83,7 @@ def encode_state(state_idx):
 
 def get_action(net, state, epsilon):
     if np.random.rand() < epsilon:
+        print("random")
         return np.random.randint(4)
 
     return torch.argmax(net(encode_state(state))).item()
@@ -114,12 +115,14 @@ def td_loss(H, net, target_net, transitions, probs, num_actions):
 
 
 def run(args):
-    env = gym.make("CliffWalking-v0") # Environment for the agent to explore
+    env = gym.make("CliffWalking-v0", render_mode=args.render_mode) # Environment for the agent to explore
     num_actions = env.action_space.n # Number of actions the agent can take
     num_states = env.observation_space.n # Number of states the agent can be in
     prev_state, _ = env.reset()
 
     delta = 0
+    epsilon = args.epsilon_initial
+    gamma = args.gamma
 
     # Initialize policy and target networks
     net = DQN(in_dim=num_states, out_dim=num_actions)
@@ -131,19 +134,22 @@ def run(args):
     # Create prioritized memory
     H = PrioritizedMemory(args.replay_size)
 
+    # Set progress bar to iterate over
+    pbar = tqdm(range(1, args.budget))
+
     # Iterate for the number of timesteps specified in the arguments
-    for step in range(1, args.budget):
+    for step in pbar:
 
         with torch.no_grad():
             # Select an action based on the policy
-            action = get_action(net, prev_state, args.epsilon)
+            action = get_action(net, prev_state, epsilon)
 
             # Take the action in the environment
             state, reward, terminated, truncated, _ = env.step(action)
 
             # Store the transition
             p_t = H.get_max_priority()
-            tr = Transition(prev_state, action, reward, args.gamma, state)
+            tr = Transition(prev_state, action, reward, gamma, state)
             H.push(p_t, tr)
 
         # Update net weights
@@ -161,41 +167,40 @@ def run(args):
                 # Update the transition prorities to the td_errors
                 H.update(td_errors.clone().detach(), idxes)
                 
+                # Calculate the loss
                 loss = torch.sum(td_errors)
+                
+                # Update the progress bar description
+                pbar.set_description(f'Loss: {loss.item():.3f}, Epsilon: {epsilon:.3f}')
 
+                # Update model parameters
                 loss.backward()
                 optim.step()
 
+                # Update target network
+                target_net.load_state_dict(net.state_dict())
 
-
-
-                 
-
-
-
-
-
-
-
-        
-        
-
-
-
+            # Update epsilon to a lower value
+            epsilon *= args.epsilon_decay
+            if epsilon <= args.epsilon_final:
+                epsilon = args.epsilon_final
         
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('-k', '--batch_size', type=int, default=8) # Number of transitions in one update pass
+    parser.add_argument('-k', '--batch_size', type=int, default=16) # Number of transitions in one update pass
     parser.add_argument('-mu', '--step_size', type=float, default=0.25) # Measure of how much to update model weights
     parser.add_argument('-K', '--replay_period', type=int, default=16) # How frequently to update model weights
     parser.add_argument('-N', '--replay_size', type=int, default=1000) # Size of the replay memory (number of transitions stored)
     parser.add_argument('-a', '--alpha', type=float, default=0.7) # How much prioritization to use (0 => no prioritization)
     parser.add_argument('-b', '--beta', type=float, default=0.5) # Importance sampling weight (tool for reducing variance)
-    parser.add_argument('-t', '--budget', type=int, default=1000) # Number of timesteps
+    parser.add_argument('-t', '--budget', type=int, default=10000) # Number of timesteps
     parser.add_argument('-g', '--gamma', type=float, default=0.7) # Discount factor
-    parser.add_argument('-e', '--epsilon', type=float, default=0.0) # How often to take a random action
+    parser.add_argument('-ei', '--epsilon_initial', type=float, default=0.9) # How often to take a random action initially
+    parser.add_argument('-d', '--epsilon_decay', type=float, default=0.99) # Decay rate for epsilon 
+    parser.add_argument('-ef', '--epsilon_final', type=float, default=0.1) # How often to take a random action finally 
     parser.add_argument('-p', '--prioritized_replay', action='store_true') # Whether or not to use a prioritized replay memory
     parser.add_argument('-lr', '--learning_rate', type=float, default=0.001) # Learning rate for the network
+    parser.add_argument('-rm', '--render_mode', type=str, default="human") # How to render the environment
     args = parser.parse_args()
 
     run(args)
