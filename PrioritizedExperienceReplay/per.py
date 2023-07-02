@@ -19,13 +19,14 @@ class PrioritizedMemory:
     def __init__(self, capacity):
         self.heap = []
         self.capacity = capacity
+
     def push(self, priority, transition):
         if self.capacity <= len(self.heap):
             self.heap = self.heap[:-1]
         heapq.heappush(self.heap, (priority, transition))
 
-    def probabilities(self, alpha=2):
-        priorities = [item[0] ** alpha for item in self.heap]
+    def probabilities(self):
+        priorities = [-1 * item[0] for item in self.heap]
         total_priorities = sum(priorities)
         return [priority / total_priorities for priority in priorities]
 
@@ -43,8 +44,9 @@ class PrioritizedMemory:
 
     def get_max_priority(self):
         if len(self.heap) == 0:
-            return 1
-        return max(self.heap, key=itemgetter(0))[0]
+            return -1
+        # Use a min here as heapq defaults to a min heap
+        return min(self.heap, key=itemgetter(0))[0]
 
     def __getitem__(self, idx):
         return self.heap[idx]
@@ -83,7 +85,6 @@ def encode_state(state_idx):
 
 def get_action(net, state, epsilon):
     if np.random.rand() < epsilon:
-        print("random")
         return np.random.randint(4)
 
     return torch.argmax(net(encode_state(state))).item()
@@ -111,8 +112,6 @@ def td_loss(H, net, target_net, transitions, probs, num_actions):
     td_errors = rewards + discounts * q_target_states - q_prev_states
 
     return td_errors
-
-
 
 def run(args):
     env = gym.make("CliffWalking-v0", render_mode=args.render_mode) # Environment for the agent to explore
@@ -147,10 +146,22 @@ def run(args):
             # Take the action in the environment
             state, reward, terminated, truncated, _ = env.step(action)
 
+            # If the agent reaches the goal
+            if state == 47:
+                # Add additional reward
+                reward += args.goal_reward
+
             # Store the transition
-            p_t = H.get_max_priority()
+            p_t = abs(H.get_max_priority())
             tr = Transition(prev_state, action, reward, gamma, state)
-            H.push(p_t, tr)
+            H.push(-1 * (p_t ** args.alpha), tr)
+
+            # Update the previous state value to store the current state
+            prev_state = state
+
+            # If the episode is over, reset the environment
+            if terminated or truncated:
+                prev_state, _ = env.reset()
 
         # Update net weights
         if step % args.replay_period == 0:
@@ -165,7 +176,8 @@ def run(args):
                 td_errors = td_loss(H, net, target_net, transitions, probs, num_actions)
 
                 # Update the transition prorities to the td_errors
-                H.update(td_errors.clone().detach(), idxes)
+                # Note: we use the absolute value of the td_errors and take the negative as heapq uses a minheap by default 
+                H.update(-1 * torch.abs(td_errors.clone().detach()), idxes)
                 
                 # Calculate the loss
                 loss = torch.sum(td_errors)
@@ -201,6 +213,7 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--prioritized_replay', action='store_true') # Whether or not to use a prioritized replay memory
     parser.add_argument('-lr', '--learning_rate', type=float, default=0.001) # Learning rate for the network
     parser.add_argument('-rm', '--render_mode', type=str, default="human") # How to render the environment
+    parser.add_argument('-tr', '--goal_reward', type=int, default=100) # Reward for reaching the goal state
     args = parser.parse_args()
 
     run(args)
