@@ -13,6 +13,9 @@ import numpy as np
 from operator import itemgetter
 from tqdm import tqdm
 from torchviz import make_dot
+import sys
+sys.path.append("..")
+from DeepQNetwork.DQN import DQN
 
 Transition = namedtuple('Transition', ['state', 'action', 'reward', 'discount', 'next_state'])
 
@@ -53,10 +56,10 @@ class PrioritizedMemory:
     def __getitem__(self, idx):
         return self.heap[idx]
 
-class DQN(nn.Module):
-    def __init__(self, in_dim, out_dim):
-        super(DQN, self).__init__()
-        self.layers = nn.Sequential(
+#class DQN(nn.Module):
+#    def __init__(self, in_dim, out_dim):
+#        super(DQN, self).__init__()
+#        self.layers = nn.Sequential(
 #            nn.Linear(in_dim, 64),
 #            nn.ReLU(),
 #
@@ -68,27 +71,27 @@ class DQN(nn.Module):
 #
 #            nn.Linear(64, out_dim),
 #            nn.ReLU()
-            nn.Linear(in_dim, out_dim, bias=False),
-            nn.ReLU()
-        )
-    
-    def forward(self, x):
-        x = self.layers(x)
+#            nn.Linear(in_dim, out_dim, bias=False),
+#            nn.ReLU()
+#        )
+#    
+#    def forward(self, x):
+#        x = self.layers(x)
 #        x = nn.functional.softmax(x, dim=0)
-        return x
+#        return x
+#
+#def encode_state(state_idx, num_states=16):
+#    state = torch.zeros(num_states)
+#    state[state_idx] = 1
+#    return state.reshape(1, *state.shape)
 
-def encode_state(state_idx, num_states=16):
-    state = torch.zeros(num_states)
-    state[state_idx] = 1
-    return state.reshape(1, *state.shape)
 
-
-def get_action(net, state, epsilon, num_states):
-    if np.random.rand() < epsilon:
-        return np.random.randint(4)
-
+#def get_action(net, state, epsilon, num_states):
+#    if np.random.rand() < epsilon:
+#        return np.random.randint(4)
+#
 #    return torch.multinomial(net(encode_state(state, num_states)), 1).item()
-    return torch.argmax(net(encode_state(state, num_states))).item()
+#    return torch.argmax(net(encode_state(state, num_states))).item()
 
 def td_loss(H, net, target_net, transitions, probs, num_actions, num_states):
     # Create tensors for previous states and states from transitions
@@ -155,13 +158,13 @@ def run(args):
     gamma = args.gamma
 
     # Initialize policy and target networks
-    net = DQN(in_dim=num_states, out_dim=num_actions)
-    net.train()
-    target_net = DQN(in_dim=num_states, out_dim=num_actions)
-    target_net.load_state_dict(net.state_dict())
+    net = DQN(num_states, num_actions, args.gamma, torch.optim.SGD, args.learning_rate)
+#    net.train()
+#    target_net = DQN(in_dim=num_states, out_dim=num_actions)
+#    target_net.load_state_dict(net.state_dict())
 
-    optim = torch.optim.SGD(net.parameters(), lr=args.learning_rate)
-    optim.zero_grad()
+#    optim = torch.optim.SGD(net.parameters(), lr=args.learning_rate)
+#    optim.zero_grad()
     
     # Create prioritized memory
     H = PrioritizedMemory(args.replay_size)
@@ -177,8 +180,8 @@ def run(args):
 
         with torch.no_grad():
             net.eval()
-            # Select an action based on the policy
-            action = get_action(net, prev_state, epsilon, num_states)
+            # Select an action based on t, 0.001he policy
+            action = net.take_action(prev_state)#get_action(net, prev_state, epsilon, num_states)
 
             # Take the action in the environment
             state, reward, terminated, truncated, _ = env.step(action)
@@ -212,19 +215,20 @@ def run(args):
                 transitions, probs, idxes = H.sample(args.batch_size)
 
                 # Calculate TD errors
-                loss, td_errors = td_loss(H, net, target_net, transitions, probs, num_actions, num_states)
+                loss = net.update_weights(transitions)
+#                loss, td_errors = td_loss(H, net, target_net, transitions, probs, num_actions, num_states)
 
                 # Update the transition prorities to the td_errors
                 # Note: we use the absolute value of the td_errors and take the negative as heapq uses a minheap by default 
-                H.update(-1 * torch.abs(td_errors.clone().detach()), idxes)
+#                H.update(-1 * torch.abs(td_errors.clone().detach()), idxes)
                 
                 # Update the progress bar description
                 pbar.set_description(f'Loss: {loss.item():.3f}, Epsilon: {epsilon:.3f}')
 
                 # Update model parameters
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
+#                optim.zero_grad()
+#                loss.backward()
+#                optim.step()
 
                 # Update target network
                 target_net.load_state_dict(net.state_dict())
