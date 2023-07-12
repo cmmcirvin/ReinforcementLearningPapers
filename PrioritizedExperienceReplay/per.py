@@ -5,20 +5,27 @@
 
 from argparse import ArgumentParser
 import gymnasium as gym
-from collections import namedtuple
+#from collections import namedtuple
+from dataclasses import dataclass
 import heapq
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from operator import itemgetter
+import operator
 from tqdm import tqdm
 import random
 import sys
 sys.path.append("..")
 from DeepQNetwork.DQN import DQN
 
-Transition = namedtuple('Transition', ['state', 'action', 'reward', 'discount', 'next_state'])
+@dataclass
+class Transition:
+    state: torch.Tensor
+    action: int
+    reward: int
+    discount: float
+    next_state: torch.Tensor
 
 class Memory:
     def __init__(self, capacity):
@@ -81,23 +88,27 @@ def visualize_q_values(args, net, env):
     for state in range(48):
         print(state, net.net(F.one_hot(torch.tensor(state), 48).to(torch.float32)))
 
-def encode_state(state, env):
-    return F.one_hot(torch.tensor(state), env.observation_space.n).to(torch.float32)
+def encode_state(state, num_states):
+    return F.one_hot(torch.tensor(state), num_states).to(torch.float32)
 
 def run(args):
-    env = gym.make("CliffWalking-v0", render_mode=args.render_mode) # Environment for the agent to explore
-    num_actions = env.action_space.n # Number of actions the agent can take
-    num_states = env.observation_space.n # Number of states the agent can be in
+    env = gym.make("CartPole-v1", render_mode=args.render_mode) # Environment for the agent to explore
+
     prev_state, _ = env.reset()
+    num_states = prev_state.shape[0] # Number of states the agent can be in
+    num_actions = env.action_space.n # Number of actions the agent can take
 
     delta = 0
     epsilon = args.epsilon_initial
     gamma = args.gamma
 
     # Initialize policy and target networks
-    policy = DQN(env)
-    target = DQN(env)
+    policy = DQN(num_states, num_actions)
+    target = DQN(num_states, num_actions)
     target.load_state_dict(policy.state_dict())
+
+    # Initialize optimizer
+    optim = torch.optim.Adam(policy.parameters(), lr=args.learning_rate)
     
     # Create prioritized memory
 #    H = PrioritizedMemory(args.replay_size)
@@ -113,19 +124,19 @@ def run(args):
         with torch.no_grad():
             
             # Select an action based on the policy
-            action = policy.take_action(encode_state(prev_state, env), epsilon)
+            action = policy.take_action(torch.tensor(prev_state), epsilon)
 
             # Take the action in the environment
             state, reward, terminated, truncated, _ = env.step(action)
 
             # If the agent reaches the goal
-            if state == args.goal_state:
+            if terminated:
                 # Add additional reward
                 reward += args.goal_reward
                 terminated = True
 
             # Store the transition
-            tr = Transition(prev_state, action, reward, gamma, state)
+            tr = Transition(torch.tensor(prev_state), action, action, gamma, torch.tensor(state))
             H.push(tr)
 
             # Update the previous state value to store the current state
@@ -136,7 +147,7 @@ def run(args):
                 prev_state, _ = env.reset()
 
         # Update net weights
-        if step % args.replay_period == 0 and step > args.batch_size:
+        if step > args.batch_size and step > args.warmup_steps:
 
             with torch.enable_grad():
 
@@ -144,23 +155,27 @@ def run(args):
                 batch = H.sample(args.batch_size)
 
                 # Calculate TD errors
-                states, actions, rewards, discounts, next_states = torch.tensor(batch).hsplit(5)
+                tr_elems = ['state', 'action', 'reward', 'discount', 'next_state']
+                getters = [operator.attrgetter(elem) for elem in tr_elems]
+                states, actions, rewards, discounts, next_states = [torch.stack([torch.tensor(getters[i](item)) for item in batch]) for i in range(len(getters))]
         
 #                states = F.one_hot(states.flatten().to(torch.long), self.num_states).to(torch.float32)
 #                next_states = F.one_hot(next_states.flatten().to(torch.long), self.num_states).to(torch.float32)
-                states = encode_state(states, env)
-                next_states = encode_state(next_states, env)
+
+#                states = encode_state(states.flatten(), num_states)
+#                next_states = encode_state(next_states.flatten(), num_states)
         
-                target_Qs = rewards + self.gamma * self.target_net(next_states)
-                Qs = self.net(states).gather(1, actions.to(torch.long))
+                target_Qs = rewards + discounts * target.take_action(next_states)
+                Qs = policy(states)[torch.arange(len(actions)), actions]
                 
                 loss = torch.mean(torch.pow(Qs - target_Qs, 2))#F.mse_loss(Qs, target_Qs)
         
-                self.optim.zero_grad()
+                optim.zero_grad()
                 loss.backward()
-                self.optim.step()
-        
-                self.target_net.load_state_dict(self.net.state_dict())
+                optim.step()
+
+                if step % args.replay_period == 0:
+                    target.load_state_dict(policy.state_dict())
 
                 # Update the transition prorities to the td_errors
                 # Note: we use the absolute value of the td_errors and take the negative as heapq uses a minheap by default 
@@ -176,22 +191,23 @@ def run(args):
         
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('-k', '--batch_size', type=int, default=4) # Number of transitions in one update pass
+    parser.add_argument('-k', '--batch_size', type=int, default=64) # Number of transitions in one update pass
     parser.add_argument('-mu', '--step_size', type=float, default=0.25) # Measure of how much to update model weights
-    parser.add_argument('-K', '--replay_period', type=int, default=1) # How frequently to update model weights
+    parser.add_argument('-w', '--warmup_steps', type=int, default=256) # Number of steps to take before updating model weights
+    parser.add_argument('-K', '--replay_period', type=int, default=4) # How frequently to update model weights
     parser.add_argument('-N', '--replay_size', type=int, default=10000) # Size of the replay memory (number of transitions stored)
     parser.add_argument('-a', '--alpha', type=float, default=1) # How much prioritization to use (0 => no prioritization)
     parser.add_argument('-b', '--beta', type=float, default=0.5) # Importance sampling weight (tool for reducing variance)
-    parser.add_argument('-t', '--budget', type=int, default=2000) # Number of timesteps
+    parser.add_argument('-t', '--budget', type=int, default=10000) # Number of timesteps
     parser.add_argument('-g', '--gamma', type=float, default=0.99) # Discount factor
     parser.add_argument('-ei', '--epsilon_initial', type=float, default=0.99) # How often to take a random action initially
-    parser.add_argument('-d', '--epsilon_decay', type=float, default=0.999) # Decay rate for epsilon 
-    parser.add_argument('-ef', '--epsilon_final', type=float, default=0.1) # How often to take a random action finally 
+    parser.add_argument('-d', '--epsilon_decay', type=float, default=0.99) # Decay rate for epsilon 
+    parser.add_argument('-ef', '--epsilon_final', type=float, default=0.0) # How often to take a random action finally 
     parser.add_argument('-p', '--prioritized_replay', action='store_true') # Whether or not to use a prioritized replay memory
-    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-2) # Learning rate for the network
+    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3) # Learning rate for the network
     parser.add_argument('-tau', '--soft_update_rate', type=float, default=5e-3) # Soft update rate of the network 
-    parser.add_argument('-rm', '--render_mode', type=str, default=None) # How to render the environment
-    parser.add_argument('-gr', '--goal_reward', type=int, default=10000000000000) # Reward for reaching the goal state
+    parser.add_argument('-rm', '--render_mode', type=str, default="human") # How to render the environment
+    parser.add_argument('-gr', '--goal_reward', type=int, default=-100) # Reward for reaching the goal state
     parser.add_argument('-gs', '--goal_state', type=int, default=47) # Goal state of the environment 
     args = parser.parse_args()
 

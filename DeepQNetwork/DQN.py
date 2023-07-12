@@ -12,10 +12,10 @@ Transition = namedtuple('Transition', ['state', 'action', 'reward', 'discount', 
 # Simple DQN that can be built off of for implementing more complex networks
 class DQN(nn.Module):
     
-    def __init__(self, env):
+    def __init__(self, num_states, num_actions):
         super(DQN, self).__init__()
-        self.num_states = env.observation_space.n
-        self.num_actions = env.action_space.n
+        self.num_states = num_states 
+        self.num_actions = num_actions 
 
         self.net = nn.Sequential(
             nn.Linear(self.num_states, self.num_actions, bias=False),
