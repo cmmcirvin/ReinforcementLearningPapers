@@ -145,6 +145,7 @@ def run(args):
             # If the episode is over, reset the environment
             if terminated or truncated:
                 prev_state, _ = env.reset()
+                epoch_step = 0
 
         # Update net weights
         if step > args.batch_size and step > args.warmup_steps:
@@ -191,7 +192,7 @@ def run(args):
         
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('-k', '--batch_size', type=int, default=64) # Number of transitions in one update pass
+    parser.add_argument('-k', '--batch_size', type=int, default=16) # Number of transitions in one update pass
     parser.add_argument('-mu', '--step_size', type=float, default=0.25) # Measure of how much to update model weights
     parser.add_argument('-w', '--warmup_steps', type=int, default=256) # Number of steps to take before updating model weights
     parser.add_argument('-K', '--replay_period', type=int, default=4) # How frequently to update model weights
@@ -204,7 +205,7 @@ if __name__ == '__main__':
     parser.add_argument('-d', '--epsilon_decay', type=float, default=0.99) # Decay rate for epsilon 
     parser.add_argument('-ef', '--epsilon_final', type=float, default=0.0) # How often to take a random action finally 
     parser.add_argument('-p', '--prioritized_replay', action='store_true') # Whether or not to use a prioritized replay memory
-    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3) # Learning rate for the network
+    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-5) # Learning rate for the network
     parser.add_argument('-tau', '--soft_update_rate', type=float, default=5e-3) # Soft update rate of the network 
     parser.add_argument('-rm', '--render_mode', type=str, default="human") # How to render the environment
     parser.add_argument('-gr', '--goal_reward', type=int, default=-100) # Reward for reaching the goal state
