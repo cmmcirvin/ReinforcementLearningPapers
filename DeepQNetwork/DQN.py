@@ -12,14 +12,21 @@ Transition = namedtuple('Transition', ['state', 'action', 'reward', 'discount', 
 # Simple DQN that can be built off of for implementing more complex networks
 class DQN(nn.Module):
     
-    def __init__(self, num_states, num_actions):
+    def __init__(self, num_states, num_actions, tau=1e-3):
         super(DQN, self).__init__()
         self.num_states = num_states 
         self.num_actions = num_actions 
+        self.tau = tau
 
         self.net = nn.Sequential(
-            nn.Linear(self.num_states, self.num_actions, bias=False),
-            nn.ReLU()
+            nn.Linear(self.num_states, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, self.num_actions),
+            nn.ReLU(),
         )
     
     def forward(self, x):
@@ -30,3 +37,8 @@ class DQN(nn.Module):
             return torch.randint(self.num_actions, (1,)).item()
         else:
             return self.net(state).argmax().item()
+
+    def soft_update(self, other):
+        for param, other_param in zip(self.parameters(), other.parameters()):
+            param.data.copy_(param.data * (1.0 - self.tau) + other_param.data * self.tau)
+

@@ -121,6 +121,10 @@ def run(args):
     # Iterate for the number of timesteps specified in the arguments
     for step in pbar:
 
+        if step == 5000:
+            env = gym.make("CartPole-v1", render_mode="human")
+            prev_state, _ = env.reset()
+
         with torch.no_grad():
             
             # Select an action based on the policy
@@ -136,7 +140,7 @@ def run(args):
                 terminated = True
 
             # Store the transition
-            tr = Transition(torch.tensor(prev_state), action, action, gamma, torch.tensor(state))
+            tr = Transition(torch.tensor(prev_state), action, reward, gamma, torch.tensor(state))
             H.push(tr)
 
             # Update the previous state value to store the current state
@@ -166,7 +170,7 @@ def run(args):
 #                states = encode_state(states.flatten(), num_states)
 #                next_states = encode_state(next_states.flatten(), num_states)
         
-                target_Qs = rewards + discounts * target.take_action(next_states)
+                target_Qs = rewards + discounts * torch.max(target(next_states), 1).values
                 Qs = policy(states)[torch.arange(len(actions)), actions]
                 
                 loss = torch.mean(torch.pow(Qs - target_Qs, 2))#F.mse_loss(Qs, target_Qs)
@@ -175,8 +179,9 @@ def run(args):
                 loss.backward()
                 optim.step()
 
-                if step % args.replay_period == 0:
-                    target.load_state_dict(policy.state_dict())
+#                if step % args.replay_period == 0:
+#                    target.load_state_dict(policy.state_dict())
+                target.soft_update(policy)
 
                 # Update the transition prorities to the td_errors
                 # Note: we use the absolute value of the td_errors and take the negative as heapq uses a minheap by default 
@@ -195,20 +200,20 @@ if __name__ == '__main__':
     parser.add_argument('-k', '--batch_size', type=int, default=16) # Number of transitions in one update pass
     parser.add_argument('-mu', '--step_size', type=float, default=0.25) # Measure of how much to update model weights
     parser.add_argument('-w', '--warmup_steps', type=int, default=256) # Number of steps to take before updating model weights
-    parser.add_argument('-K', '--replay_period', type=int, default=4) # How frequently to update model weights
+    parser.add_argument('-K', '--replay_period', type=int, default=16) # How frequently to update model weights
     parser.add_argument('-N', '--replay_size', type=int, default=10000) # Size of the replay memory (number of transitions stored)
     parser.add_argument('-a', '--alpha', type=float, default=1) # How much prioritization to use (0 => no prioritization)
     parser.add_argument('-b', '--beta', type=float, default=0.5) # Importance sampling weight (tool for reducing variance)
     parser.add_argument('-t', '--budget', type=int, default=10000) # Number of timesteps
-    parser.add_argument('-g', '--gamma', type=float, default=0.99) # Discount factor
+    parser.add_argument('-g', '--gamma', type=float, default=0.999) # Discount factor
     parser.add_argument('-ei', '--epsilon_initial', type=float, default=0.99) # How often to take a random action initially
     parser.add_argument('-d', '--epsilon_decay', type=float, default=0.99) # Decay rate for epsilon 
     parser.add_argument('-ef', '--epsilon_final', type=float, default=0.0) # How often to take a random action finally 
     parser.add_argument('-p', '--prioritized_replay', action='store_true') # Whether or not to use a prioritized replay memory
-    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-5) # Learning rate for the network
+    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-2) # Learning rate for the network
     parser.add_argument('-tau', '--soft_update_rate', type=float, default=5e-3) # Soft update rate of the network 
-    parser.add_argument('-rm', '--render_mode', type=str, default="human") # How to render the environment
-    parser.add_argument('-gr', '--goal_reward', type=int, default=-100) # Reward for reaching the goal state
+    parser.add_argument('-rm', '--render_mode', type=str, default=None) # How to render the environment
+    parser.add_argument('-gr', '--goal_reward', type=int, default=-10) # Reward for reaching the goal state
     parser.add_argument('-gs', '--goal_state', type=int, default=47) # Goal state of the environment 
     args = parser.parse_args()
 
