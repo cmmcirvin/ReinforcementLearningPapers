@@ -11,6 +11,7 @@ import heapq
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 import operator
 from tqdm import tqdm
@@ -118,6 +119,10 @@ def run(args):
     pbar = tqdm(range(1, args.budget))
     terminated, truncated = False, False
 
+    writer = SummaryWriter()
+    ep_step = 0
+    ep = 0
+
     # Iterate for the number of timesteps specified in the arguments
     for step in pbar:
 
@@ -132,6 +137,7 @@ def run(args):
 
             # Take the action in the environment
             state, reward, terminated, truncated, _ = env.step(action)
+            ep_step += 1
 
             # If the agent reaches the goal
             if terminated:
@@ -149,7 +155,9 @@ def run(args):
             # If the episode is over, reset the environment
             if terminated or truncated:
                 prev_state, _ = env.reset()
-                epoch_step = 0
+                writer.add_scalar("Episode Reward", ep_step, ep)
+                ep_step = 0
+                ep += 1
 
         # Update net weights
         if step > args.batch_size and step > args.warmup_steps:
@@ -210,7 +218,7 @@ if __name__ == '__main__':
     parser.add_argument('-d', '--epsilon_decay', type=float, default=0.99) # Decay rate for epsilon 
     parser.add_argument('-ef', '--epsilon_final', type=float, default=0.0) # How often to take a random action finally 
     parser.add_argument('-p', '--prioritized_replay', action='store_true') # Whether or not to use a prioritized replay memory
-    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-2) # Learning rate for the network
+    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3) # Learning rate for the network
     parser.add_argument('-tau', '--soft_update_rate', type=float, default=5e-3) # Soft update rate of the network 
     parser.add_argument('-rm', '--render_mode', type=str, default=None) # How to render the environment
     parser.add_argument('-gr', '--goal_reward', type=int, default=-10) # Reward for reaching the goal state
