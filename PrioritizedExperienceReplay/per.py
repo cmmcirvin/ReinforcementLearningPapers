@@ -41,9 +41,10 @@ class Memory:
         return random.sample(self.memory, batch_size)
 
 class PrioritizedMemory:
-    def __init__(self, capacity, beta):
+    def __init__(self, capacity, alpha, beta):
         self.memory = []
         self.capacity = capacity
+        self.alpha = alpha
         self.beta = beta
 
     def push(self, transition, priority):
@@ -57,6 +58,7 @@ class PrioritizedMemory:
 
     def probabilities(self):
         priorities = self.priorities()
+        priorities = [priority ** self.alpha for priority in priorities]
         total_priorities = sum(priorities)
         return [priority / total_priorities for priority in priorities]
 
@@ -67,6 +69,7 @@ class PrioritizedMemory:
         imps = torch.pow(len(self.memory) * torch.tensor(probs), -1 * self.beta)
         imps = imps / max(imps)
         transitions = itemgetter(*idxes)(self.memory)
+        self.beta = min(self.beta + 1/20000, 1)
         return transitions, imps, idxes
 
     def update(self, priorities, idxes):
@@ -115,7 +118,7 @@ def run(args):
     optim = torch.optim.Adam(policy.parameters(), lr=args.learning_rate)
     
     # Create prioritized memory
-    H = PrioritizedMemory(args.replay_size, args.beta)
+    H = PrioritizedMemory(args.replay_size, args.alpha, args.beta)
 #    H = Memory(args.replay_size)
 
     # Set progress bar to iterate over
@@ -202,7 +205,7 @@ if __name__ == '__main__':
     parser.add_argument('-w', '--warmup_steps', type=int, default=256) # Number of steps to take before updating model weights
     parser.add_argument('-K', '--replay_period', type=int, default=16) # How frequently to update model weights
     parser.add_argument('-N', '--replay_size', type=int, default=10000) # Size of the replay memory (number of transitions stored)
-    parser.add_argument('-a', '--alpha', type=float, default=1) # How much prioritization to use (0 => no prioritization)
+    parser.add_argument('-a', '--alpha', type=float, default=0.7) # How much prioritization to use (0 => no prioritization)
     parser.add_argument('-b', '--beta', type=float, default=0.5) # Importance sampling weight (tool for reducing variance)
     parser.add_argument('-t', '--budget', type=int, default=10000) # Number of timesteps
     parser.add_argument('-g', '--gamma', type=float, default=0.999) # Discount factor
