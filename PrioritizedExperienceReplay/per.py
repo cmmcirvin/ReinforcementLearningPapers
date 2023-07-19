@@ -5,7 +5,6 @@
 
 from argparse import ArgumentParser
 import gymnasium as gym
-#from collections import namedtuple
 from dataclasses import dataclass
 import heapq
 import torch
@@ -13,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
-import operator
+from operator import itemgetter, attrgetter
 from tqdm import tqdm
 import random
 import sys
@@ -30,8 +29,8 @@ class Transition:
 
 class Memory:
     def __init__(self, capacity):
-        self.capacity = capacity
         self.memory = []
+        self.capacity = capacity
 
     def push(self, transition):
         if self.capacity <= len(self.memory):
@@ -42,41 +41,45 @@ class Memory:
         return random.sample(self.memory, batch_size)
 
 class PrioritizedMemory:
-    def __init__(self, capacity):
-        self.heap = []
+    def __init__(self, capacity, beta):
+        self.memory = []
         self.capacity = capacity
+        self.beta = beta
 
-    def push(self, priority, transition):
-        if self.capacity <= len(self.heap):
-            random_idx = np.random.randint(0, len(self.heap))
-            self.heap.pop(random_idx)
-        heapq.heappush(self.heap, (priority, transition))
+    def push(self, transition, priority):
+        if self.capacity <= len(self.memory):
+            random_idx = np.random.randint(0, len(self.memory))
+            self.memory.pop(random_idx)
+        self.memory.append((priority, transition))
+
+    def priorities(self):
+        return [item[0] for item in self.memory]
 
     def probabilities(self):
-        priorities = [-1 * item[0] for item in self.heap]
+        priorities = self.priorities()
         total_priorities = sum(priorities)
         return [priority / total_priorities for priority in priorities]
 
     def sample(self, batch_size):
         probs = self.probabilities()
-        idxes = np.random.choice(np.arange(len(probs)), size=batch_size, replace=False, p=probs)
+        idxes = np.random.choice(np.arange(len(self.memory)), size=batch_size, replace=False, p=probs)
         probs = itemgetter(*idxes)(probs)
-        transitions = itemgetter(*idxes)(self.heap)
-        return transitions, probs, idxes
+        imps = torch.pow(len(self.memory) * torch.tensor(probs), -1 * self.beta)
+        imps = imps / max(imps)
+        transitions = itemgetter(*idxes)(self.memory)
+        return transitions, imps, idxes
 
     def update(self, priorities, idxes):
-        for i, heap_idx in enumerate(idxes):
-            self.heap[heap_idx] = (priorities[i].item(), self.heap[heap_idx][1])
-        heapq.heapify(self.heap)
+        for i, memory_idx in enumerate(idxes):
+            self.memory[memory_idx] = (priorities[i].item(), self.memory[memory_idx][1])
 
     def get_max_priority(self):
-        if len(self.heap) == 0:
-            return -1
-        # Use a min here as heapq defaults to a min heap
-        return min(self.heap, key=itemgetter(0))[0]
+        if len(self.memory) == 0:
+            return 1
+        return max(self.priorities())
 
     def __getitem__(self, idx):
-        return self.heap[idx]
+        return self.memory[idx]
 
 def visualize_q_values(args, net, env):
     # Visualize the Q-values for every state-action pair
@@ -112,8 +115,8 @@ def run(args):
     optim = torch.optim.Adam(policy.parameters(), lr=args.learning_rate)
     
     # Create prioritized memory
-#    H = PrioritizedMemory(args.replay_size)
-    H = Memory(args.replay_size)
+    H = PrioritizedMemory(args.replay_size, args.beta)
+#    H = Memory(args.replay_size)
 
     # Set progress bar to iterate over
     pbar = tqdm(range(1, args.budget))
@@ -123,12 +126,11 @@ def run(args):
     ep_step = 0
     ep = 0
 
+    tr_elems = ['state', 'action', 'reward', 'discount', 'next_state']
+    getters = [attrgetter(elem) for elem in tr_elems]
+
     # Iterate for the number of timesteps specified in the arguments
     for step in pbar:
-
-        if step == 5000:
-            env = gym.make("CartPole-v1", render_mode="human")
-            prev_state, _ = env.reset()
 
         with torch.no_grad():
             
@@ -147,7 +149,7 @@ def run(args):
 
             # Store the transition
             tr = Transition(torch.tensor(prev_state), action, reward, gamma, torch.tensor(state))
-            H.push(tr)
+            H.push(tr, H.get_max_priority())
 
             # Update the previous state value to store the current state
             prev_state = state
@@ -165,35 +167,25 @@ def run(args):
             with torch.enable_grad():
 
                 # Perform batch_size update steps
-                batch = H.sample(args.batch_size)
+                transitions, imps, idxes = H.sample(args.batch_size)
 
-                # Calculate TD errors
-                tr_elems = ['state', 'action', 'reward', 'discount', 'next_state']
-                getters = [operator.attrgetter(elem) for elem in tr_elems]
-                states, actions, rewards, discounts, next_states = [torch.stack([torch.tensor(getters[i](item)) for item in batch]) for i in range(len(getters))]
-        
-#                states = F.one_hot(states.flatten().to(torch.long), self.num_states).to(torch.float32)
-#                next_states = F.one_hot(next_states.flatten().to(torch.long), self.num_states).to(torch.float32)
-
-#                states = encode_state(states.flatten(), num_states)
-#                next_states = encode_state(next_states.flatten(), num_states)
+                states, actions, rewards, discounts, next_states = [torch.stack([torch.tensor(getters[i](item[1])) for item in transitions]) for i in range(len(getters))]
         
                 target_Qs = rewards + discounts * torch.max(target(next_states), 1).values
                 Qs = policy(states)[torch.arange(len(actions)), actions]
                 
-                loss = torch.mean(torch.pow(Qs - target_Qs, 2))#F.mse_loss(Qs, target_Qs)
+                td_errors = torch.abs(Qs - target_Qs)
+                loss = torch.mean(imps * torch.pow(Qs - target_Qs, 2))
         
                 optim.zero_grad()
                 loss.backward()
                 optim.step()
 
-#                if step % args.replay_period == 0:
-#                    target.load_state_dict(policy.state_dict())
                 target.soft_update(policy)
 
                 # Update the transition prorities to the td_errors
                 # Note: we use the absolute value of the td_errors and take the negative as heapq uses a minheap by default 
-#                H.update(-1 * torch.abs(td_errors.clone().detach()), idxes)
+                H.update(td_errors.clone().detach(), idxes)
                 
                 # Update the progress bar description
                 pbar.set_description(f'Loss: {loss:.3f}, Epsilon: {epsilon:.3f}')
@@ -202,7 +194,7 @@ def run(args):
             epsilon *= args.epsilon_decay
             if epsilon <= args.epsilon_final:
                 epsilon = args.epsilon_final
-        
+
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('-k', '--batch_size', type=int, default=16) # Number of transitions in one update pass
