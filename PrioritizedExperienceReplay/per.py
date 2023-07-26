@@ -5,40 +5,15 @@
 
 from argparse import ArgumentParser
 import gymnasium as gym
-from dataclasses import dataclass
-import heapq
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from operator import itemgetter, attrgetter
 from tqdm import tqdm
-import random
-import sys
 sys.path.append("..")
 from DeepQNetwork.DQN import DQN
-
-@dataclass
-class Transition:
-    state: torch.Tensor
-    action: int
-    reward: int
-    discount: float
-    next_state: torch.Tensor
-
-class Memory:
-    def __init__(self, capacity):
-        self.memory = []
-        self.capacity = capacity
-
-    def push(self, transition):
-        if self.capacity <= len(self.memory):
-            self.memory.pop(0)
-        self.memory.append(transition)
-
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
+from utils import *
 
 class PrioritizedMemory:
     def __init__(self, capacity, alpha, beta):

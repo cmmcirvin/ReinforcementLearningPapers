@@ -7,9 +7,8 @@ from collections import namedtuple
 from tqdm import tqdm
 import numpy as np
 
-Transition = namedtuple('Transition', ['state', 'action', 'reward', 'discount', 'next_state'])
-
 # Simple DQN that can be built off of for implementing more complex networks
+ 
 class DQN(nn.Module):
     
     def __init__(self, num_states, num_actions, tau=1e-3):
